@@ -1,2 +1,1 @@
-# commit-signoff-demo
-commit-signoff-demo
+# Commit Sign-off Demo
