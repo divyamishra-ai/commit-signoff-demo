@@ -1,0 +1,123 @@
+name: WebApi Build & Deploy
+
+env:
+  APP_DIR: "Amplify.WebApi.v1"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches:
+      - "wip/api/*"
+      - "feature/api/*"
+      - "consolidate/api/*"
+      - "qa/api-poc*"
+      - "rc/api-poc*"
+    paths:
+      - "Amplify/Amplify.WebApi.v1/**"
+
+  push:
+    branches:
+      - main   # ✅ REQUIRED for sync
+      - "wip/api/*"
+      - "consolidate/api/*"
+      - "qa/api-poc*"
+      - "rc/api-poc*"
+    paths:
+      - "Amplify/Amplify.WebApi.v1/**"
+
+jobs:
+
+# ✅ 1. Sync main → feature branches
+  sync-main-to-feature:
+    name: Sync main to feature branches
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PLATFORM_GIT_TOKEN }}
+
+      - name: Setup Git
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+
+      - name: Sync branches
+        run: |
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+
+          for branch in $(git for-each-ref --format='%(refname:short)' refs/remotes/origin/feature/ | sed 's/origin\///'); do
+            echo "Syncing $branch"
+            git checkout -B $branch origin/$branch
+            git merge origin/main || echo "Conflict in $branch"
+            git push origin $branch || echo "Push failed"
+          done
+
+# 🔐 2. EPIC ID validation (ONLY ADD THIS)
+  validate-epic-id:
+    name: Validate Epic ID
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Validate branch name
+        run: |
+          BRANCH="${{ github.head_ref }}"
+          echo "Checking branch: $BRANCH"
+
+          if [[ ! "$BRANCH" =~ EPIC-[0-9]+ ]]; then
+            echo "❌ Epic ID missing → PR blocked"
+            exit 1
+          else
+            echo "✅ EPIC ID present"
+          fi
+
+# 🔍 Existing job (unchanged)
+  gitleaks-scan:
+    name: Secrets Scan
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.PLATFORM_GIT_TOKEN }}
+
+      - name: Scan for Hardcoded Secrets with Gitleaks
+        run: docker run --rm -v ${{ github.workspace }}/Amplify/${{ env.APP_DIR }}:/target zricethezav/gitleaks:latest detect --source="/target" --no-git -v
+        continue-on-error: true
+
+# 🏗️ Existing build (unchanged)
+  ci-build:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.PLATFORM_GIT_TOKEN }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "3.1"
+
+      - name: Build
+        run: dotnet build Amplify\${{ env.APP_DIR }}\${{ env.APP_DIR }}.csproj --configuration Release
+
+# 🔔 3. Teams Notification (ADD THIS)
+  notify-teams:
+    name: Notify Teams
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send notification
+        run: |
+          STATUS="${{ job.status }}"
+          MSG="Repo: ${{ github.repository }} | Branch: ${{ github.ref_name }} | Status: $STATUS"
+
+          curl -H "Content-Type: application/json" \
+          -d "{\"text\": \"$MSG\"}" \
+          "${{ secrets.TEAMS_WEBHOOK_URL }}"
